@@ -1,0 +1,61 @@
+---
+title: "Chapter 3 - A review of R modeling fundamentals"
+author: "Brad Hill"
+date: "8/12/2021"
+output: html_document
+---
+
+
+```{r setup, include = F}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+data(crickets, package = 'modeldata')
+```
+
+## Section 3 - Why tidiness is important?  
+This section mostly talks about how different modeling frameworks use different defaults and return counter-intuitive results. It gives us some ways around some of these as well as introducing `broom::tidy()` as a way of cleaning several objects.
+
+```{r}
+corr_res <- mtcars %>% 
+  select(-mpg) %>% 
+  map(cor.test, y = mtcars$mpg)
+corr_res[[1]]
+```
+
+The above output is not really useable for modeling or visualization purposes. It tells us plenty of information, but not in a very parse-friendly way.
+
+```{r}
+broom::tidy(corr_res[[1]])
+```
+
+`broom` does a good job of allowing us to use that in a nice easy way.
+
+```{r}
+corr_res %>% 
+  map_dfr(tidy, .id = 'predictor') %>% 
+  ggplot(aes(x = fct_reorder(predictor, estimate))) +
+  geom_point(aes(y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  labs(x = '',
+       y = 'Correlation with mpg') +
+  theme_bw()
+```
+
+## Section 4 - Combining Base R and Tidyverse  
+
+We can do a lot simply by combining base R modeling functionality with tidyverse. For instance, modeling separately based on cricket species.
+
+```{r}
+(split_by_species <- crickets %>% 
+  group_nest(species))
+
+(model_by_species <- split_by_species %>% 
+    mutate(model = map(data, ~lm(rate ~ temp, data = .x))))
+
+model_by_species %>% 
+  mutate(coef = map(model, tidy)) %>% 
+  select(species, coef) %>% 
+  unnest(cols = c(coef))
+```
+

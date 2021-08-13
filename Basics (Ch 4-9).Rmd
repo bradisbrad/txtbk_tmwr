@@ -1,0 +1,613 @@
+---
+title: "Basics"
+author: "Brad Hill"
+date: "8/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidymodels)
+data(ames, package = 'modeldata')
+```
+
+# Chapter 4 - The Ames housing data
+
+This chapter introduces the Ames housing data that we'll be using throughout the book.
+
+## Section 1 - Exploring important features
+
+Let's start by looking at the desired outcome, which is the last sale price of the house in USD. 
+
+```{r}
+ames %>% 
+  ggplot(aes(x = Sale_Price)) +
+  geom_histogram(bins = 50, 
+                 color = 'white') +
+  theme_bw()
+```
+
+We can see that the data is right-skewed, which may lead to prediction errors on more expensive houses affecting the overall model more. A log-transformation might be helpful here to draw it towards the center and ensure that no negative prices are predicted.
+
+```{r}
+ames %>% 
+  ggplot(aes(x = Sale_Price)) +
+  geom_histogram(bins = 50,
+                 color = 'white') +
+  scale_x_log10() +
+  theme_bw()
+```
+
+We might have issues with interpretation, but the book replaces the price withthe log price, so we're going with it.
+
+```{r}
+ames <- ames %>% 
+  mutate(Sale_Price = log10(Sale_Price))
+```
+
+# Chapter 5 - Spending our data
+
+This chapter focuses on making sure we're not using too much data when trying to create a prediction. We wouldn't want to overfit or anything. The idea that this is leading to, of course, is training and test sets. Cross validation, etc.
+
+## Section 1 - Common methods for splitting data
+
+The first method is splitting into a training and test set. We can do this with the `rsample` function `initial_split()`.
+
+```{r}
+set.seed(123)
+(ames_split <- initial_split(ames, 
+                             prop = 0.80))
+```
+
+The resulting output shows the amount of data in each split. We can pull each set from this split using other `rsample` functions.
+
+```{r}
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+```
+
+Something to consider when looking at the Ames data specifically is the uneven nature of Sale_Price. We've already discussed that it is right-skewed, so we might want to use stratified random sampling rather than simple random sampling to keep predictions on those most expensive houses more in line.
+
+_Note: As far as I can tell, passing a numerical column to the `strata` argument uses `make_strata()` to create the strata. You could potentially change how many breaks there are by using this function within the `initial_split()` function itself._
+
+```{r}
+set.seed(123)
+ames_split <- initial_split(ames, prop = 0.8, strata = Sale_Price)
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+```
+
+Also worth mentioning, time series should not be split this way. We can, however, use `initial_time_split()` to stay consistent in workflow while requiring an appropriate split.
+
+## Section 2 - What proportion should be used?  
+
+Doesn't super matter, and it's dependent on the problem. I usually use like 70-80%, but your mileage may vary.
+
+## Section 3 - Validation sets
+
+Validation sets are kind of an intermediate step between training and test sets that allow you to estimate performance of many models without using the test set as the comparative set. Kind of semantics, but ya know, whatever.
+
+## Section 4 - Multi-level data
+
+Sometimes data will have multiple points for a given "experimental unit." For instance, a single patient over time, or a single batch of a manufacturing process. With these, we need to sample at the unit level rather than simple random sampling. 
+
+## Section 5 - Watch out for leakage
+
+It's advised that we keep test sets separate from training sets to avoid data leakage. We also shouldn't use the test set to inform our decision making when it comes to modeling. The book gives an example of subsetting the training data to be most similar to the test set (especially for competition style problems.) This is super bad for generalizability, so obviously avoid it.
+
+# Chapter 6 - Fitting models with `parsnip`  
+
+## Section 1 - Creating a model
+
+Tidymodels uses a uniform approach to specifying a model:  
+- Specify the type of model  
+- Specify the engine for fitting the model  
+- Declare the mode of the model  
+
+This is all done without referencing the data. For instance, here are some implementations for regression using different engines.
+
+```{r}
+linear_reg() %>%  # Specify the type of model
+  set_engine('lm') # Specify the engine
+
+linear_reg() %>% 
+  set_engine('glmnet')
+
+linear_reg() %>% 
+  set_engine('stan')
+```
+
+Once the model itself is specified, we use `fit()` or `fit_xy()` to estimate the model. Alternatively, `translate()` will parse the parsnip (HA) implementation to the original package's syntax.
+
+```{r}
+linear_reg() %>%  # Specify the type of model
+  set_engine('lm') %>%  # Specify the engine
+  translate()
+
+linear_reg(penalty = 1) %>% 
+  set_engine('glmnet') %>% 
+  translate()
+
+linear_reg() %>% 
+  set_engine('stan') %>% 
+  translate()
+```
+
+Now let's apply this to the actual data. For this example, we're only going to use lat and lon to create the model.
+
+```{r}
+lm_model <- linear_reg() %>% 
+  set_engine('lm')
+
+(lm_form_fit <- lm_model %>% 
+    fit(Sale_Price ~ Longitude + Latitude, data = ames_train))
+
+(lm_xy_fit <- lm_model %>% 
+    fit_xy(
+      x = ames_train %>% select(Longitude, Latitude),
+      y = ames_train %>% pull(Sale_Price)
+    ))
+```
+
+Notice that the estimations are the same, but the inputs for the formula version and the xy version of `fit_()` are different. Something else important, formula methods like `fit()` create dummy variables, whereas `fit_xy()` passes the data as-is.
+
+## Section 2 - Use the model results  
+
+You can find the fitted model in the `fit` element of the result. Important to note that we shouldn't use the specific `fit` element for predicting as it can lead to errors if preprocessing occurred. 
+
+```{r}
+lm_form_fit %>% 
+  pluck('fit')
+
+lm_form_fit %>% 
+  pluck('fit') %>% 
+  vcov()
+```
+
+Additionally, all this:
+
+```{r}
+model_res <- lm_form_fit %>% 
+  pluck('fit') %>% 
+  summary()
+
+param_est <- coef(model_res)
+param_est
+```
+
+can be replaced with this:
+
+```{r}
+tidy(lm_form_fit)
+```
+
+## Section 3 - Make predictions  
+
+Some rules of thumb for `parsnip`'s predict methodology:  
+- Results are always a tibble  
+- Column names of the tibble are predictable  
+- Rows always equal the input data set  
+
+For instance:
+
+```{r}
+ames_test_small <- ames_test %>% 
+  slice(1:5)
+
+predict(lm_form_fit, new_data = ames_test_small)
+```
+
+This makes it easy to merge predictions with the original data for analysis and visualization.
+
+```{r}
+pred_tbl <- ames_test_small %>% 
+  select(Sale_Price) %>% 
+  bind_cols(predict(lm_form_fit, ames_test_small)) %>% 
+  bind_cols(predict(lm_form_fit, ames_test_small, type = 'pred_int'))
+
+pred_tbl %>% 
+  ggplot(aes(x = 1:5)) +
+  geom_ribbon(aes(ymin = .pred_lower, ymax = .pred_upper), 
+              fill = 'red', alpha = 0.2) +
+  geom_line(aes(y = Sale_Price), color = 'black') +
+  geom_line(aes(y = .pred), color = 'red') +
+  theme_bw()
+```
+
+This stuff is super helpful because we're standardizing workflows and reducing the lift to try new models. For instance, let's try a decision tree.
+
+```{r}
+tree_model <- decision_tree(min_n = 2) %>% 
+  set_engine('rpart') %>% 
+  set_mode('regression')
+
+tree_fit <- tree_model %>% 
+  fit(Sale_Price ~ Longitude + Latitude, data = ames_train)
+
+ames_test_small %>% 
+  select(Sale_Price) %>% 
+  bind_cols(predict(tree_fit, ames_test_small))
+```
+
+Notice that the workflow is almost identical to the regression method above.
+
+## Section 5 - Creating model specifications
+
+`parsnip_addin()` is super helpful.
+
+# Chapter 7 - A model workflow  
+
+This chapter introduces workflows, which are ostensibly more powerful than the `parsnip` modeling bit. This means we can include processing (both pre- and post-) steps in our overall modeling process in a uniform matter.
+
+## Section 1 - Thinking about models
+
+This section is mainly just prepping us on how to think about the model processing steps.
+
+## Section 2 - Workflow basics  
+
+We're starting with that same `lm_model` object from above.
+
+```{r}
+lm_model
+```
+
+Workflows always require a model object.
+
+```{r}
+(lm_wflow <- workflow() %>% 
+   add_model(lm_model))
+```
+
+If the model is simple, we can just use a formula as the preprocessor (which is currently set to `None`).
+
+```{r}
+(lm_wflow <- lm_wflow %>% 
+   add_formula(Sale_Price ~ Longitude + Latitude))
+```
+
+As with the model object prior to this, there is a `fit()` method that creates the model.
+
+```{r}
+(lm_fit <- fit(lm_wflow, ames_train))
+```
+
+And of course we can also predict on this.
+
+```{r}
+predict(lm_fit, ames_test %>% slice(1:3))
+```
+
+Models and preprocessors can be removed or updated:
+
+```{r}
+lm_fit %>% 
+  update_formula(Sale_Price ~ Longitude)
+```
+
+## Section 3 - Adding raw variables to the workflow
+
+We can pass predictors differently too. We're not locked into a formula.
+
+```{r}
+lm_wflow %>% 
+  remove_formula() %>% 
+  add_variables(outcome = Sale_Price,
+                predictors = c(Longitude, Latitude))
+```
+
+We can use `tidyselect` methodology here as well.
+
+```{r}
+lm_wflow %>% 
+  remove_formula() %>% 
+  add_variables(outcome = Sale_Price,
+                predictors = c(ends_with('tude')))
+
+lm_wflow %>% 
+  remove_formula() %>% 
+  add_variables(outcome = Sale_Price,
+                predictors = everything())
+```
+
+## Section 4 - How is the formula used?
+
+A good example is using a formula for tree-based models. For `ranger` and `randomForest`, the workflow knows factors should be untouched. For `xgboost`, the workflow knows that the indicator columns must be created. 
+
+## Section 4.1 - Special formulas (lme4)
+
+Multilevel model packages have kind of come together on a standard formula language. Another example is survival analysis using `strata()`. The way to handle this is to use both `add_variables()` and `add_models()` with the correct formula.
+
+```{r}
+library(survival)
+
+parametric_model <- surv_reg() %>% 
+  set_engine('survival')
+
+parametric_workflow <- workflow() %>% 
+  add_variables(outcome = c(fustat, futime),
+                predictors = c(age, rx)) %>% 
+  add_model(parametric_model,
+            formula = Surv(futime, fustat) ~ age + strata(rx))
+
+(parametric_fit <- fit(parametric_workflow, data = ovarian))
+```
+
+## Section 5 - Creating multiple workflows at once  
+
+Using the package `workflowsets` we can pass a bunch of workflows all at once without having to reset each time. For instance, let's look at all the location setups that we might be interested in modeling.
+
+```{r}
+location <- list(
+  longitude = Sale_Price ~ Longitude,
+  latitude = Sale_Price ~ Latitude,
+  coords = Sale_Price ~ Longitude + Latitude,
+  neighborhood = Sale_Price ~ Neighborhood
+)
+```
+
+And then we can even use multiple models here.
+
+```{r}
+library(workflowsets)
+(location_models <- workflow_set(
+  preproc = location,
+  models = list(lm = lm_model)
+))
+
+location_models$info[[1]]
+
+extract_workflow(location_models, id = 'coords_lm')
+```
+
+Evidently these are mostly designed to be used with resampling, but we're getting to that later. For now, let's make a new fit column.
+
+```{r}
+(location_models <- location_models %>% 
+   mutate(fit = map(info, ~fit(.x$workflow[[1]], ames_train))))
+
+location_models$fit[[1]]
+```
+
+These won't really be fleshed out until Chapter 15, but this is clearly super important for efficiently testing multiple models.
+
+# Chapter 8 - Feature engineering with `recipes`  
+
+This chapter, clearly, introduces the `recipes` packages.
+
+## Section 1 - A simple recipe for the Ames housing data
+
+For illustrative purposes, we're only focusing on a subset of predictors. In this case, we're looking at neighborhood, gross above-grade living area, year built, and type of building.
+
+A general base R version of this model may look like this:
+
+```{r eval = F}
+lm(Sale_Price ~ Neighborhood + log10(Gr_Liv_Area) + Year_Built + Bldg_Type, data = ames)
+```
+
+This can be broken into steps:  
+- Sale price is defined as the outcome of the predictors  
+- Gross living area is logged  
+- Neighborhood and building type get dummied  
+
+Now, in the formula method above, this does all this stuff immediately. In the recipe specification version, we're passing a list of instructions that won't be applied until later.
+
+```{r}
+(simple_ames <- recipe(
+  Sale_Price ~ Neighborhood + Gr_Liv_Area + Year_Built + Bldg_Type,
+  data = ames_train
+) %>% 
+  step_log(Gr_Liv_Area, base = 10) %>% 
+  step_dummy(all_nominal_predictors()))
+```
+
+This method is helpful because these processing steps aren't directly tied to the model and can be reused. 
+
+## Section 2 - Using recipes  
+
+Now we can add this recipe to a workflow super easily.
+
+```{r}
+(lm_wflow <- lm_wflow %>%
+   remove_formula() %>% 
+   add_recipe(simple_ames))
+```
+
+We can then estimate this using `fit()`.
+
+```{r}
+lm_fit <- fit(lm_wflow, ames_train)
+predict(lm_fit, ames_test %>% slice(1:5))
+```
+
+The workflow will apply to the test data the same way it does the test before predicting in `predict()`. There are also various `extract_*()` functions to grab specific pieces of the workflow.
+
+```{r}
+lm_fit %>% 
+  extract_recipe()
+
+lm_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy() %>% 
+  slice(1:5)
+```
+
+## Section 3 - How data are used by the recipe  
+
+This section mainly highlights the importance of recipes only using the training data for estimation or normalization operations.
+
+## Section 4 - Other recipe steps  
+
+### Section 4.1 - Encoding qualitative data  
+
+There are a bunch of `step_*()` functions that help with this. `step_unknown()` can change missing values to a specific factor. `step_novel()` allows for new factor levels later. `step_other()` can catch certain levels in a separate category. Here's an example:
+
+```{r}
+ames_train %>% 
+  ggplot(aes(y = Neighborhood)) +
+  geom_bar() +
+  labs(y = '') +
+  theme_bw()
+```
+
+We've got neighborhoods that have less than 5 properties, including one with 0 properties. We can use `step_other()` to catch anything below a certain threshold, in our case 1%. 
+
+```{r}
+simple_ames <- recipe(
+  Sale_Price ~ Neighborhood + Gr_Liv_Area + Year_Built + Bldg_Type,
+  data = ames_train
+) %>% 
+  step_log(Gr_Liv_Area, base = 10) %>% 
+  step_other(Neighborhood, threshold = 0.01) %>% 
+  step_dummy(all_nominal_predictors())
+```
+
+### Section 4.2 - Interaction terms  
+
+Because we already dummied the building type variable, and we want to be explicit, we would use a selector to create the interactions in this set.
+
+```{r}
+simple_ames <- recipe(
+  Sale_Price ~ Neighborhood + Gr_Liv_Area + Year_Built + Bldg_Type,
+  data = ames_train
+) %>% 
+  step_log(Gr_Liv_Area, base = 10) %>% 
+  step_other(Neighborhood, threshold = 0.01) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(~ Gr_Liv_Area:starts_with("Bldg_Type_"))
+```
+
+In fact, we can _only_ do this interaction step _after_ dummying the factor predictor. Also worth noting, the gross living area predictor was already log transformed, so the interaction step will use that log transformed version of gross living area.
+
+### Section 4.3 - Splines  
+
+I don't use these much, but we've got the option.
+
+```{r}
+simple_ames <- recipe(
+  Sale_Price ~ Neighborhood + Gr_Liv_Area + Year_Built + Bldg_Type,
+  data = ames_train
+) %>% 
+  step_log(Gr_Liv_Area, base = 10) %>% 
+  step_other(Neighborhood, threshold = 0.01) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(~ Gr_Liv_Area:starts_with("Bldg_Type_")) %>% 
+  step_ns(Latitude, deg_free = 20)
+```
+
+### Section 4.4 - Feature Extraction (PCA)  
+
+We've got a `step_pca()` function that should usually be led by a `step_normalize()` function.
+
+### Section 4.5 - Row sampling steps  
+
+There are recipe steps for up and down sampling for class imbalances, but they exist in the `themis` package. Important to note that all of these sampling steps should have a `skip` argument set to `TRUE`, because the change should only affect the training sample, not the test set.  
+
+## Section 5 - Skipping steps for new data  
+
+Speaking of skipping steps, a good note is that we're transforming Sale_Price ahead of this process and not using `step_log(Sale_Price, base = 10)`. This is because a step like that would lead to an error in the new data when Sale_Price is unknown. However, using things like the subsampling steps will require that skip argument mentioned above. These steps are only skipped in `predict()` and are still used in `fit()`, so fitting to new data isn't appropriate.
+
+## Section 6 - Tidy a recipe
+
+There's a tidy method for recipes that put each step in a table. We can set an id for each step, otherwise it's a random suffix.
+
+```{r}
+ames_rec <- recipe(
+  Sale_Price ~ Neighborhood + Gr_Liv_Area + Year_Built + Bldg_Type + Latitude + Longitude, 
+  data = ames_train
+) %>%
+  step_log(Gr_Liv_Area, base = 10) %>% 
+  step_other(Neighborhood, threshold = 0.01, id = "my_id") %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact( ~ Gr_Liv_Area:starts_with("Bldg_Type_") ) %>% 
+  step_ns(Latitude, Longitude, deg_free = 20)
+tidy(ames_rec)
+```
+
+And we can re-fit the workflow with the new recipe.
+
+```{r}
+lm_wflow <- workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(ames_rec)
+
+lm_fit <- fit(lm_wflow, ames_train)
+estimated_recipe <- lm_fit %>% 
+  extract_recipe()
+
+tidy(estimated_recipe, id = 'my_id')
+tidy(estimated_recipe, number = 2)
+```
+
+## Section 7 - Roles
+
+We can change roles for certain data that might be useful to keep but not used as a predictor. For instance, address could be kept as metadata and not a predictor like this:  
+
+```{r, eval = F}
+ames_rec %>% 
+  update_role(address, new_role = 'street address')
+```
+
+# Chapter 9 - Judging model effectiveness  
+
+## Section 2 - Regression metrics  
+
+We're using `yardstick` now folks.
+
+```{r}
+ames_test_res <- predict(
+  lm_fit,
+  new_data = ames_test %>% 
+    select(-Sale_Price)
+) %>% 
+  bind_cols(ames_test %>% 
+              select(Sale_Price))
+ames_test_res
+```
+
+```{r}
+ames_test_res %>% 
+  ggplot(aes(x = Sale_Price, y = .pred)) +
+  geom_abline(lty = 2) +
+  geom_point(alpha = 0.5) +
+  labs(y = 'Predicted Sale Price (log10)',
+       x = 'Sale Price (log10)') +
+  coord_obs_pred() +
+  theme_bw()
+```
+
+This is the general format of `yardstick` output.
+```{r}
+rmse(ames_test_res, truth = Sale_Price, estimate = .pred)
+```
+
+But we can set up a set of metrics to check for each model. Note that `yardstick` doesn't contain a metric for adjusted R^2 because `yardstick` doesn't like it.
+
+```{r}
+ames_metrics <- metric_set(rmse, rsq, mae)
+ames_metrics(ames_test_res, truth = Sale_Price, estimate = .pred)
+```
+
+## Section 3 - Binary classification metrics  
+
+We're using different data for this example.  
+
+```{r}
+data("two_class_example")
+conf_mat(two_class_example, truth = truth, estimate = predicted)
+class_set <- metric_set(accuracy, mcc, f_meas)
+class_set(two_class_example, truth = truth, estimate = predicted)
+```
+
+We can change event level with the `event_level` argument here as well.
+
+We've also go roc curves.
+
+```{r}
+roc_curve(two_class_example, truth, Class1) %>% 
+  ggplot(aes(1 - specificity, sensitivity)) +
+  geom_line() + 
+  theme_bw()
+
+roc_auc(two_class_example, truth, Class1)
+```
+
